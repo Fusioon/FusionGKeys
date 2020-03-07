@@ -2,12 +2,15 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>netcoreapp3.0</TargetFramework>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
     <RunAnalyzersDuringBuild>false</RunAnalyzersDuringBuild>
-    <ApplicationIcon />
+    <ApplicationIcon>logitech-logo.ico</ApplicationIcon>
     <Win32Resource />
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <StartupObject />
+    <RootNamespace>Fusion.GKeys</RootNamespace>
+    <PackageIcon></PackageIcon>
+    <PackageIconUrl />
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
@@ -23,7 +26,23 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Hid.Net" Version="3.1.0" />
+    <None Remove="logitech-logo.png" />
+    <None Remove="logitech-logo.png" />
   </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Hid.Net" Version="3.1.0" />
+    <PackageReference Include="Microsoft.Windows.SDK.Contracts" Version="10.0.18362.2005" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="data\G903.vm">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <Target Name="PreBuild" BeforeTargets="PreBuildEvent">
+    <Exec Command="F:\FusionGKeys\publish\$(TargetName).exe --exit" />
+  </Target>
 
 </Project>

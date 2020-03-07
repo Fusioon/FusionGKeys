@@ -1,9 +1,7 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Text;
 
-namespace FusionGKeys
+namespace Fusion.GKeys
 {
     /// <summary>
     /// http://msdn.microsoft.com/en-us/library/windows/desktop/ms646270(v=vs.85).aspx
@@ -773,5 +771,5 @@ namespace FusionGKeys
         }
     }
 
-    
+
 }

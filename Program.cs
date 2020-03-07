@@ -1,300 +1,234 @@
-﻿using System;
-using System.Runtime.InteropServices;
-using System.Threading.Tasks;
-using Device.Net;
-using Microsoft.Win32.SafeHandles;
-using Device.Net.Windows;
-using System.Threading;
-using System.IO;
+﻿using Hid.Net.Windows;
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Windows.UI.Notifications;
 
-namespace FusionGKeys
+namespace Fusion.GKeys
 {
-    //enum NativeEffectGroup : byte
-    //{
-    //    color = 0x01,
-    //    breathing,
-    //    cycle,
-    //    waves
-    //};
-    ////  enum NativeEffect : ushort
-    ////  {
-    ////      color = (NativeEffectGroup::color) << 8,
-    ////breathing = static_cast<uint16_t>(NativeEffectGroup::breathing) << 8,
-    ////cycle = static_cast<uint16_t>(NativeEffectGroup::cycle) << 8,
-    ////waves = static_cast<uint16_t>(NativeEffectGroup::waves) << 8,
-    ////hwave,
-    ////vwave,
-    ////cwave
-    ////  };
-
-    //enum NativeEffectPart : byte
-    //{
-    //    all = 0xff,
-    //    keys = 0x00,
-    //    logo
-    //}
-
-    //enum NativeEffectStorage : byte
-    //{
-    //    none = 0x00,
-    //    // "user-stored lighting" can be recalled with backlight+7
-    //    user,
-    //}
-
     class Program
     {
-        static async Task<SafeFileHandle> SetGKeysFunc(bool asFKeys)
-        {
-            const int k_g910_1 = 0xc32b;
-            const int k_g910_2 = 0xc335;
-            const int k_logitech = 0x46d;
-
-            var factory = new Hid.Net.Windows.WindowsHidDeviceFactory(null, null);
-            var result = await factory.GetConnectedDeviceDefinitionsAsync(new FilterDeviceDefinition() { DeviceType = DeviceType.Hid, VendorId = k_logitech });
-
-            var hidapi = new Hid.Net.Windows.WindowsHidApiService(null);
-            foreach (var q in result)
-            {
-                if (q.ProductId == k_g910_1 || q.ProductId == k_g910_2)
-                {
-                    if (q.WriteBufferSize != 20) continue;
-
-                    using var file_handle = APICalls.CreateFile(
-                        q.DeviceId,
-                        FileAccessRights.GenericWrite,
-                        APICalls.FileShareWrite | APICalls.FileShareRead,
-                        IntPtr.Zero,
-                        APICalls.OpenExisting,
-                        0,
-                        IntPtr.Zero);
-                    {
-                        if (!file_handle.IsInvalid)
-                        {
-                            byte value = (byte)(asFKeys ? 0 : 1);
-                            byte[] data = new byte[20];
-
-                            data[0] = 0x11;
-                            data[1] = 0xff;
-                            data[2] = 0x08;
-                            data[3] = 0x2e;
-                            data[4] = value;
-
-                            if (hidapi.AWriteFile(file_handle, data, 20, out var written, 0))
-                            {
-                                SetColor(file_handle, NativeEffectPart.All);
-
-                                var read_handle = APICalls.CreateFile(
-                                    q.DeviceId,
-                                    FileAccessRights.GenericRead,
-                                    APICalls.FileShareWrite | APICalls.FileShareRead,
-                                    IntPtr.Zero,
-                                    APICalls.OpenExisting,
-                                    0,
-                                    IntPtr.Zero);
-                                if (!read_handle.IsInvalid)
-                                {
-                                    return read_handle;
-                                }
-                                break;
-                            }
-                        }
-                    }
-
-                }
-            }
-            return null;
-        }
-
-        static void Emit(KeyCode keyCode, bool check)
-        {
-            if (!check) return;
-            Input.SendKeyPress(keyCode);
-        }
-
+        const string k_AppName = "FusionGKeys";
         static Settings settings = new Settings()
         {
             effect = EEffect.Fixed,
             cycle = ECycle.Horizontal,
             color = new Color() { red = 127, green = 0, blue = 0 },
-            echo_color = new Color() { red = 127, green = 0, blue = 0 },
-            rate = 4000
+            rate = 4000,
+            low_battery_voltage = 3500,
+            keymap = new Dictionary<EMacroKey, KeyCode>()
+            {
+                { EMacroKey.G1, KeyCode.F13 },
+                { EMacroKey.G2, KeyCode.F14 },
+                { EMacroKey.G3, KeyCode.F15 },
+                { EMacroKey.G4, KeyCode.F16 },
+                { EMacroKey.G5, KeyCode.F17 },
+                { EMacroKey.G6, KeyCode.F18 },
+                { EMacroKey.G7, KeyCode.F19 },
+                { EMacroKey.G8, KeyCode.F20 },
+                { EMacroKey.G9, KeyCode.F21 },
+                { EMacroKey.M1, KeyCode.F22 },
+                { EMacroKey.M2, KeyCode.F23 },
+                { EMacroKey.M3, KeyCode.F24 },
+            }
         };
 
-        static bool SetColor(SafeFileHandle writeHandle, NativeEffectPart part)
+        static DateTime lastVoltageNotification;
+
+        static void OnMacroKeyPressed(Keyboard kb, EMacroKey key)
         {
-            const byte K_G910_PROTOCOL_BYTE = 0x10;
-
-            if (part == NativeEffectPart.All)
+            if (settings.keymap.TryGetValue(key, out var kc))
             {
-                return
-                    SetColor(writeHandle, NativeEffectPart.Keys) &&
-                    SetColor(writeHandle, NativeEffectPart.Logo);
+                Input.SendKeyPress(kc);
             }
-
-            byte effectGroup = (byte)NativeEffectGroup.cycle;
-            byte storage = (byte)NativeEffectStorage.user;
-            ushort effect = (ushort)(effectGroup << 8);
-
-            switch (settings.effect)
+            if (key == EMacroKey.MR)
             {
-                case EEffect.Fixed:
-                    effectGroup = (byte)NativeEffectGroup.color;
-                    effect = (ushort)(effectGroup << 8);
-                    break;
-                case EEffect.Cycle:
-                    effectGroup = (byte)NativeEffectGroup.cycle;
-                    effect = (ushort)(effectGroup << 8);
-                    break;
-                case EEffect.Breathing:
-                    effectGroup = (byte)NativeEffectGroup.breathing;
-                    effect = (ushort)(effectGroup << 8);
-                    break;
-                case EEffect.ColorWave:
-                    effectGroup = (byte)NativeEffectGroup.waves;
-                    switch (settings.cycle)
-                    {
-                        case ECycle.Horizontal:
-                            effect = (ushort)((effectGroup << 8) + 1);
-                            break;
-                        case ECycle.Vertical:
-                            effect = (ushort)((effectGroup << 8) + 2);
-                            break;
-                        case ECycle.Center:
-                            effect = (ushort)((effectGroup << 8) + 3);
-                            break;
-                    }
-                    break;
-            }
+                TimeSpan voltageNotificatinCooldown = TimeSpan.FromSeconds(5);
 
-            if (!writeHandle.IsInvalid)
-            {
-                byte protocolByte = K_G910_PROTOCOL_BYTE;
-
-                byte[] data = new byte[20]
+                if (DateTime.Now -  lastVoltageNotification < voltageNotificatinCooldown)
                 {
-                    0x11, 0xff, protocolByte, 0x3c,
-                    (byte)part, effectGroup,
-                    // color of static-color and breathing effects
-                    settings.color.red, settings.color.green, settings.color.blue,
-                    // period of breathing effect (ms)
-                    (byte)(settings.rate >> 8), (byte)(settings.rate & 0xFF),
-                    // period of cycle effect (ms)
-                    (byte)(settings.rate >> 8), (byte)(settings.rate & 0xFF),
-                    // wave variation (e.g. horizontal)
-                    (byte)(effect & 0xFF),
-                    0x64, // unused?
-                    // period of wave effect (ms)
-                    (byte)(settings.rate >> 8),
-                    storage,
-                    0,0,0 // unused?
-                };
+                    return;
+                }
 
-                return APICalls.WriteFile(writeHandle, data, 20, out var written, 0);
+                if (lastPowerState != 0)
+                {
+                    var template = ToastNotificationManager.GetTemplateContent(ToastTemplateType.ToastText01);
+                    var textNodes = template.GetElementsByTagName("text");
+                    textNodes.Item(0).InnerText = $"Mouse battery voltage: {lastVoltage}mV ~{lastPercent:0.#}% ({lastPowerState})";
+                    var notification = new ToastNotification(template);
+                    toastNotifier.Show(notification);
+                    lastVoltageNotification = DateTime.Now;
+                }
             }
+        }
+
+        static DateTime lastNotificationTime;
+        static EPowerState lastPowerState = EPowerState.Unknown;
+        static uint lastVoltage = 0;
+        static float lastPercent = 0;
+        static ToastNotifier toastNotifier = ToastNotificationManager.CreateToastNotifier(k_AppName);
+
+        static void SendBatteryLowNotification()
+        {
+            if ((DateTime.Now - lastNotificationTime) < TimeSpan.FromMinutes(30))
+            {
+                return;
+            }
+
+            lastNotificationTime = DateTime.Now;
+
+            var template = ToastNotificationManager.GetTemplateContent(ToastTemplateType.ToastText01);
+            var textNodes = template.GetElementsByTagName("text");
+            textNodes.Item(0).InnerText = $"Battery level low!";
+            var notification = new ToastNotification(template);
+            toastNotifier.Show(notification);
+        }
+
+        static void SendBatteryFullNotification()
+        {
+            var template = ToastNotificationManager.GetTemplateContent(ToastTemplateType.ToastText01);
+            var textNodes = template.GetElementsByTagName("text");
+            textNodes.Item(0).InnerText = $"Battery is fully charged!";
+            var notification = new ToastNotification(template);
+            toastNotifier.Show(notification);
+        }
+
+        static Logger batteryLogger = new Logger("battery", new Logger.Settings()
+        {
+            appendFile = true,
+            consoleOutput = false,
+            filePath = "./Logs/voltage.log"
+        });
+
+        static void OnBatteryChanged(Mouse mouse, uint voltage, float percent, EPowerState state)
+        {
+            batteryLogger.Info($"{voltage} mV {percent} %");
+
+            if (state == EPowerState.OnBattery && voltage < settings.low_battery_voltage)
+            {
+                SendBatteryLowNotification();
+            }
+            if (lastPowerState != state && state == EPowerState.Charged)
+            {
+                SendBatteryFullNotification();
+            }
+
+            lastPowerState = state;
+            lastVoltage = voltage;
+            lastPercent = percent;
+        }
+
+        static void OnMouseButtonsChanged(Mouse mouse, ushort buttons)
+        {
+
+        }
+
+        static async Task<bool> RunMouse()
+        {
+            using Mouse mouse = (await Mouse.GetConnected()).FirstOrDefault();
+
+            if (mouse != null && await mouse.Initialize())
+            {
+                batteryLogger.Info($"Using mouse \'{mouse.Model}\'.");
+                mouse.OnBatteryChanged = OnBatteryChanged;
+                mouse.OnButtonChanged = OnMouseButtonsChanged;
+                return await mouse.ListenForEvents();
+            }
+
+            return false;
+        }
+
+        static async Task<bool> RunKeyboard()
+        {
+            using Keyboard keyboard = (await Keyboard.GetConnected()).FirstOrDefault();
+
+            if (keyboard != null)
+            {
+                await keyboard.SetGKeys(false);
+                await keyboard.SetColor(settings, NativeEffectPart.All);
+                keyboard.OnMacroKeyPressed = OnMacroKeyPressed;
+                await keyboard.ListenForMacroKeys();
+                return true;
+            }
+
             return false;
         }
 
         static async Task Run()
         {
+            WindowsHidDeviceFactory.Register(null, null);
             Settings.load("settings.cfg", ref settings);
-            var kbs = await Keyboard.GetConnected();
-            if (kbs.Count == 0)
+
+            TimeSpan sleepTime = TimeSpan.FromMilliseconds(3000);
+
+            Task<bool> keyboardTask = null, mouseTask = null;
+
+            int maxRetryCount = 20;
+            while (maxRetryCount > 0)
             {
-                return;
-            }
-            Keyboard keyboard = kbs[0];
-            keyboard.SetGKeys(false);
-            keyboard.SetColor(settings, NativeEffectPart.All);
-
-            byte[] buffer = new byte[20];
-            while (!keyboard.ReadHandle.IsInvalid)
-            {
-                Array.Clear(buffer, 0, buffer.Length);
-                if (keyboard.ReadData(buffer))
+                if (keyboardTask == null || keyboardTask.IsCompleted)
                 {
-                    if (buffer[0] == 0x11 && buffer[1] == 0xff)
-                    {
-                        // MKeys
-                        if (buffer[2] == 0x08)
-                        {
-                            Emit(KeyCode.F13, ((buffer[4] & 1) != 0));      // G1
-                            Emit(KeyCode.F14, ((buffer[4] & 2) != 0));      // G2
-                            Emit(KeyCode.F15, ((buffer[4] & 4) != 0));      // G3
-                            Emit(KeyCode.F16, ((buffer[4] & 8) != 0));      // G4
-                            Emit(KeyCode.F17, ((buffer[4] & 16) != 0));     // G5
-                            Emit(KeyCode.F18, ((buffer[4] & 32) != 0));     // G6
-                            Emit(KeyCode.F19, ((buffer[4] & 64) != 0));     // G7
-                            Emit(KeyCode.F20, ((buffer[4] & 128) != 0));    // G8
-                            Emit(KeyCode.F21, ((buffer[5] & 1) != 0));      // G9
-                        }
-                        // MKeys
-                        if (buffer[2] == 0x09 && buffer[3] == 0)
-                        {
-                            Emit(KeyCode.F22, (buffer[4] & 1) != 0);        // M1
-                            Emit(KeyCode.F23, (buffer[4] & 2) != 0);        // M2
-                            Emit(KeyCode.F24, (buffer[4] & 4) != 0);        // M3
-                        }
-                        // MRKey
-                        if (buffer[2] == 0x0A && buffer[3] == 0)
-                        {
-                            Emit(KeyCode.F24, (buffer[4] & 1) != 0);        // MR
-                        }
-                    }
+                    keyboardTask = RunKeyboard();
                 }
-            }
-        }
-
-        static async Task MouseTest()
-        {
-            const int k_DongleId = 0xC539;
-
-            var factory = new Hid.Net.Windows.WindowsHidDeviceFactory(null, null);
-            var result = await factory.GetConnectedDeviceDefinitionsAsync(new FilterDeviceDefinition() { DeviceType = DeviceType.Hid, VendorId = 0x46d });
-            foreach (var device in result)
-            {
-                if(device.ReadBufferSize != 20 && device.WriteBufferSize != 20)
+                if (mouseTask == null || mouseTask.IsCompleted)
                 {
-                    continue;
-                }
-                if(device.ProductId != k_DongleId)
-                {
-                    continue;
-                }
-                using var write = APICalls.CreateFile(
-                        device.DeviceId,
-                        FileAccessRights.GenericWrite,
-                        APICalls.FileShareWrite | APICalls.FileShareRead,
-                        IntPtr.Zero,
-                        APICalls.OpenExisting,
-                        0,
-                        IntPtr.Zero);
-
-                if(write.IsInvalid)
-                {
-                    Console.WriteLine("handle invalid!");
-                    continue;
+                    mouseTask = RunMouse();
                 }
 
+                await Task.WhenAny(keyboardTask, mouseTask);
+                
+                if((keyboardTask.IsCompleted && !keyboardTask.Result) || (mouseTask.IsCompleted && !mouseTask.Result))
+                {
+                    --maxRetryCount;
+                }
 
-
+                if(!mouseTask.IsCompleted || !mouseTask.Result)
+                {
+                    await Task.Delay(sleepTime);
+                }
             }
         }
 
         static async Task Main(string[] args)
         {
-            //await MouseTest();
-           
-            bool createdNew;
-            Mutex mutex = new Mutex(true, "FusionGKeys", out createdNew);
-            if (!createdNew)
+            try
             {
-                return;
+                var executablePath = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+                Directory.SetCurrentDirectory(Path.GetDirectoryName(executablePath));
+
+                using EventWaitHandle handle = new EventWaitHandle(
+                    false,
+                    EventResetMode.ManualReset,
+                    k_AppName, out var createdNew
+                );
+
+                if (!createdNew)
+                {
+                    handle.Set();
+                    handle.Reset();
+                }
+
+                foreach(var arg in args)
+                {
+                    if(string.Compare(arg, "--exit", true) == 0)
+                    {
+                        return;
+                    }
+                }
+
+                Task exitTask = Task.Run(() =>
+                {
+                    handle.WaitOne();
+                });
+
+                await Task.WhenAny(exitTask, Run());
             }
-            while (true)
+            catch (Exception ex)
             {
-                await Run();
-                Thread.Sleep(TimeSpan.FromSeconds(5));
+                Debug.Exception(ex, true);
             }
         }
     }
