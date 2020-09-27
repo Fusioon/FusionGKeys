@@ -24,6 +24,10 @@ namespace Fusion.GKeys
         public byte red;
         public byte green;
         public byte blue;
+        public override string ToString()
+        {
+            return $"{red} {green} {blue}";
+        }
     }
 
     [AttributeUsage(AttributeTargets.Field)]
@@ -49,7 +53,7 @@ namespace Fusion.GKeys
         public Dictionary<EMacroKey, KeyCode> keymap;
         public uint low_battery_voltage;
 
-        static void CreateSettingsFile(string path)
+        static void CreateSettingsFile(string path, in Settings settings)
         {
             string GetEnumValues<T>() where T : Enum
             {
@@ -65,12 +69,12 @@ namespace Fusion.GKeys
 
             string[] text =
              {
-                $";effect <{GetEnumValues<EEffect>()}>",
-                $";color <red green blue> (0-255)",
+                $";effect <{GetEnumValues<EEffect>()}> default: {settings.effect}",
+                $";color <red green blue> (0-255) default: {settings.color}",
                 //$";echocolor <red green blue> (0-255)",
-                $";rate <int> (ms)",
-                $";cycle <{GetEnumValues<ECycle>()}>",
-                $";warn_voltage <uint> (mV)"
+                $";rate <int> (ms) default: {settings.rate}",
+                $";cycle <{GetEnumValues<ECycle>()}> default: {settings.cycle}",
+                $";warn_voltage <uint> (mV) default: {settings.low_battery_voltage}"
             };
 
             File.WriteAllText(path, string.Join("\n", text));
@@ -193,7 +197,7 @@ namespace Fusion.GKeys
             }
             else
             {
-                CreateSettingsFile(filePath);
+                CreateSettingsFile(filePath, in settings);
             }
         }
     }

@@ -35,7 +35,7 @@ namespace Fusion.GKeys
 
     public enum EMacroKey
     {
-        Unknown,
+        Unknown = 0,
 
         G1,
         G2,
@@ -51,6 +51,9 @@ namespace Fusion.GKeys
         M2,
         M3,
         MR,
+
+
+        MAX
     }
 
     enum NativeEffectStorage : byte
@@ -76,6 +79,9 @@ namespace Fusion.GKeys
         public EKeyboardModel Model { get; }
 
         public OnMacroKey OnMacroKeyPressed;
+        public OnMacroKey OnMacroKeyReleased;
+
+        bool[] macroKeysDown = new bool[(int)EMacroKey.MAX];
 
         IDevice _device;
         public async Task SetGKeys(bool asFKeys)
@@ -178,20 +184,8 @@ namespace Fusion.GKeys
 
         public async Task SetColor(Settings settings, NativeEffectPart part = NativeEffectPart.All)
         {
-            //  enum NativeEffect : ushort
-            //  {
-            //color = (NativeEffectGroup::color) << 8,
-            //breathing = static_cast<uint16_t>(NativeEffectGroup::breathing) << 8,
-            //cycle = static_cast<uint16_t>(NativeEffectGroup::cycle) << 8,
-            //waves = static_cast<uint16_t>(NativeEffectGroup::waves) << 8,
-            //hwave,
-            //vwave,
-            //cwave
-            //  };
-
             if (part == NativeEffectPart.All)
             {
-
                 await SetColor(settings, NativeEffectPart.Keys);
                 await SetColor(settings, NativeEffectPart.Logo);
             }
@@ -260,6 +254,58 @@ namespace Fusion.GKeys
             await _device.WriteAsync(data);
         }
 
+        protected void MacroKeyUpdate(bool isDown, EMacroKey key)
+        {
+            int index = (int)key;
+            if (index < 0 || index >= macroKeysDown.Length)
+            {
+                return;
+            }
+
+            if (isDown && !macroKeysDown[index])
+            {
+                OnMacroKeyPressed?.Invoke(this, key);
+            }
+
+            if(!isDown && macroKeysDown[index])
+            {
+                OnMacroKeyReleased?.Invoke(this, key);
+            }
+
+            macroKeysDown[index] = isDown;
+        }
+
+        protected void MacroKeyEvent(byte sub_id, byte param0, byte param1)
+        {
+            // MKeys
+            if (sub_id == 0x08)
+            {
+                MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.G1);
+                MacroKeyUpdate((param0 & 0x02) != 0, EMacroKey.G2);
+                MacroKeyUpdate((param0 & 0x04) != 0, EMacroKey.G3);
+                MacroKeyUpdate((param0 & 0x08) != 0, EMacroKey.G4);
+                MacroKeyUpdate((param0 & 0x10) != 0, EMacroKey.G5);
+                MacroKeyUpdate((param0 & 0x20) != 0, EMacroKey.G6);
+                MacroKeyUpdate((param0 & 0x40) != 0, EMacroKey.G7);
+                MacroKeyUpdate((param0 & 0x80) != 0, EMacroKey.G8);
+                MacroKeyUpdate((param1 & 0x01) != 0, EMacroKey.G9);
+            }
+
+            // MKeys
+            if (sub_id == 0x09)
+            {
+                MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.M1);
+                MacroKeyUpdate((param0 & 0x02) != 0, EMacroKey.M2);
+                MacroKeyUpdate((param0 & 0x04) != 0, EMacroKey.M3);
+            }
+
+            // MRKey
+            if (sub_id == 0x0A)
+            {
+                MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.MR);
+            }
+        }
+
         public async Task ListenForMacroKeys()
         {
             while (_device != null)
@@ -273,37 +319,19 @@ namespace Fusion.GKeys
                 {
                     return;
                 }
-                if (result.BytesRead == 20 && OnMacroKeyPressed != null)
+
+                if (result.BytesRead == 20 && result.Data[0] == 0x11 && result.Data[1] == 0xff)
                 {
-                    if (result.Data[0] == 0x11 && result.Data[1] == 0xff)
+                    switch (result.Data[2])
                     {
-                        // MKeys
-                        if (result.Data[2] == 0x08)
-                        {
-                            if (((result.Data[4] & 1) != 0)) OnMacroKeyPressed(this, EMacroKey.G1);
-                            if (((result.Data[4] & 2) != 0)) OnMacroKeyPressed(this, EMacroKey.G2);
-                            if (((result.Data[4] & 4) != 0)) OnMacroKeyPressed(this, EMacroKey.G3);
-                            if (((result.Data[4] & 8) != 0)) OnMacroKeyPressed(this, EMacroKey.G4);
-                            if (((result.Data[4] & 16) != 0)) OnMacroKeyPressed(this, EMacroKey.G5);
-                            if (((result.Data[4] & 32) != 0)) OnMacroKeyPressed(this, EMacroKey.G6);
-                            if (((result.Data[4] & 64) != 0)) OnMacroKeyPressed(this, EMacroKey.G7);
-                            if (((result.Data[4] & 128) != 0)) OnMacroKeyPressed(this, EMacroKey.G8);
-                            if (((result.Data[5] & 1) != 0)) OnMacroKeyPressed(this, EMacroKey.G9);
-                        }
-                        // MKeys
-                        if (result.Data[2] == 0x09 && result.Data[3] == 0)
-                        {
-                            if (((result.Data[4] & 1) != 0)) OnMacroKeyPressed(this, EMacroKey.M1);
-                            if (((result.Data[4] & 2) != 0)) OnMacroKeyPressed(this, EMacroKey.M2);
-                            if (((result.Data[4] & 4) != 0)) OnMacroKeyPressed(this, EMacroKey.M3);
-                        }
-                        // MRKey
-                        if (result.Data[2] == 0x0A && result.Data[3] == 0)
-                        {
-                            if (((result.Data[4] & 1) != 0)) OnMacroKeyPressed(this, EMacroKey.MR);
-                        }
+                        case 0x08:
+                        case 0x09:
+                        case 0x0A:
+                            MacroKeyEvent(result.Data[2], result.Data[4], result.Data[5]);
+                            break;
                     }
                 }
+
             }
         }
 
@@ -322,10 +350,9 @@ namespace Fusion.GKeys
             }
         }
 
-        public static async Task<List<Keyboard>> GetConnected()
+        public static async Task<Keyboard> GetConnected()
         {
-            List<Keyboard> keyboards = new List<Keyboard>();
-
+            
             var devices = await DeviceManager.Current.GetConnectedDeviceDefinitionsAsync(
                 new FilterDeviceDefinition() { DeviceType = DeviceType.Hid, VendorId = k_VendorId, UsagePage = 0xFF43 }
                 );
@@ -342,10 +369,10 @@ namespace Fusion.GKeys
                 {
                     var device = DeviceManager.Current.GetDevice(definition);
                     await device.InitializeAsync();
-                    keyboards.Add(new Keyboard(definition.ProductName, model, device));
+                    return new Keyboard(definition.ProductName, model, device);
                 }
             }
-            return keyboards;
+            return null;
         }
 
     }

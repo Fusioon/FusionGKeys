@@ -97,6 +97,9 @@ namespace Fusion.GKeys
 				Console.WriteLine(output);
 				Console.ResetColor();
 			}
+#if DEBUG
+			System.Diagnostics.Debug.WriteLine(output);
+#endif
 			streamWriter.WriteLine(output);
 
 		}

@@ -109,7 +109,7 @@ namespace Fusion.GKeys
             {
                 int length = msg->report_id == k_LongMessage ? k_LongMessageLength : k_ShortMessageLength;
                 length -= 4;
-                char[] buffer = new char[length * 3];
+                Span<char> buffer = new char[length * 3];
                 for (int i = 0; i < length; i++)
                 {
                     var str_idx = i * 3;
@@ -118,7 +118,7 @@ namespace Fusion.GKeys
                     buffer[str_idx + 1] = hex[1];
                     buffer[str_idx + 2] = ' ';
                 }
-                return new string(buffer, 0, buffer.Length);
+                return new string(buffer);
             }
         }
 
@@ -136,10 +136,10 @@ namespace Fusion.GKeys
         static unsafe void PrintMessage(hidpp20_message* msg, [CallerMemberName] string CallerName = "")
         {
             Debug.Info(@$"{CallerName}
-                        report_id: {msg->report_id.ToString("X2")}
-                        device_id: {msg->device_idx.ToString("X2")}
-                        sub_id:    {msg->sub_id.ToString("X2")}
-                        address:   {msg->address.ToString("X2")}
+                        report_id: {msg->report_id:X2}
+                        device_id: {msg->device_idx:X2}
+                        sub_id:    {msg->sub_id:X2}
+                        address:   {msg->address:X2}
                         params:    {ParamsToString(msg)}
 
                     ");
@@ -169,7 +169,7 @@ namespace Fusion.GKeys
 
         static string ByteArrayToString(byte[] bytes)
         {
-            return string.Concat(Array.ConvertAll(bytes, x => (x.ToString("X2") + " ")));
+            return string.Concat(Array.ConvertAll(bytes, x => ($"{x:X2}")));
         }
 
         public string Name { get; private set; }
@@ -185,7 +185,6 @@ namespace Fusion.GKeys
         Dictionary<EHidppPage, (int, hidpp20_feature)> features;
 
         Dictionary<EReportId, Task<ReadResult>> devicesReadTask = new Dictionary<EReportId, Task<ReadResult>>();
-        Dictionary<EReportId, IDevice> devices;
 
         public Action<Mouse, uint, float, EPowerState> OnBatteryChanged;
         public Action<Mouse, ushort> OnButtonChanged;
@@ -193,9 +192,17 @@ namespace Fusion.GKeys
         VoltageMap voltagePercentMap = new VoltageMap();
         Task<ReadResult> CreateReadTask(EReportId expReportId)
         {
-            if (!devices.TryGetValue(expReportId, out IDevice device))
+            IDevice device;
+            switch (expReportId)
             {
-                return null;
+                case EReportId.Short:
+                    device = device7;
+                    break;
+                case EReportId.Long:
+                    device = device20;
+                    break;
+                default:
+                    return null;
             }
 
             if (devicesReadTask.TryGetValue(expReportId, out Task<ReadResult> task))
@@ -203,20 +210,51 @@ namespace Fusion.GKeys
                 if (!task.IsCompleted) return task;
             }
 
-            task = device.ReadAsync();
-            devicesReadTask[expReportId] = task;
-            return task;
+            return devicesReadTask[expReportId] = device.ReadAsync();
         }
 
 
         async Task<ReadResult?> Read(EReportId expReportId)
         {
-            if (expReportId == 0x00) // read any message
+            try
             {
-                return await await Task.WhenAny(CreateReadTask(EReportId.Short), CreateReadTask(EReportId.Long));
+                if (expReportId == 0x00) // read any message
+                {
+                    return await await Task.WhenAny(CreateReadTask(EReportId.Short), CreateReadTask(EReportId.Long));
+                }
+
+                return await CreateReadTask(expReportId);
+            }
+            catch (IOException)
+            {
+                device20 = null;
+            }
+            return null;
+        }
+
+        async Task<(uint, hidpp20_message msg)> ReadMessageTimeout(EReportId expReportId, TimeSpan timeoutTime)
+        {
+            var readTask = Read(expReportId);
+            
+            if (readTask.Wait(timeoutTime) && await readTask is ReadResult result)
+            {
+                hidpp20_message msg;
+                unsafe
+                {
+                    Marshal.Copy(result.Data, 0, new IntPtr(&msg), (int)result.BytesRead);
+                }
+
+                if (expReportId == 0x00 || msg.report_id == (byte)expReportId)
+                {
+                    return (result.BytesRead, msg);
+                }
+                else
+                {
+                    Debug.Error("Unexpected report id.");
+                }
             }
 
-            return await CreateReadTask(expReportId);
+            return (0, default);
         }
 
         async Task<(uint, hidpp20_message msg)> ReadMessage(EReportId expReportId, TimeSpan? timeoutTime)
@@ -281,18 +319,18 @@ namespace Fusion.GKeys
             return true;
         }
 
-        async Task<(uint, hidpp20_message)?> SendReadMessage(hidpp20_message msg, EReportId expReportId, [CallerMemberName] string CallerName = "")
+        async Task<hidpp20_message?> SendReadMessage(hidpp20_message msg, EReportId expReportId, [CallerMemberName] string CallerName = "")
         {
             if (await SendMessage(msg))
             {
-                while(true)
+                while (true)
                 {
-                    if (await ReadMessage(expReportId) is (var length, var res))
+                    if (await ReadMessage(expReportId) is (var length, var res) && length != 0)
                     {
                         if (res.device_idx == msg.device_idx &&
                             res.sub_id == msg.sub_id)
                         {
-                            return (length, res);
+                            return res;
                         }
                     }
                     else
@@ -323,7 +361,7 @@ namespace Fusion.GKeys
                 msg.sub_id = (byte)feature.Item1;
                 msg.param0 = (byte)(enable ? 1 : 0);
 
-                if (await SendReadMessage(msg, 0x00) is (var length, var res) && length != 0)
+                if (await SendReadMessage(msg, 0x00) is hidpp20_message res)
                 {
                     PrintMessage(res);
                     return true;
@@ -345,7 +383,7 @@ namespace Fusion.GKeys
             if (features.TryGetValue(EHidppPage.MouseButtonSpy, out var feature))
             {
                 msg.sub_id = (byte)feature.Item1;
-                if (await SendReadMessage(msg, 0x00) is (var length, var res) && length != 0)
+                if (await SendReadMessage(msg, 0x00) is hidpp20_message res)
                 {
                     return res.param0 == 0;
                 }
@@ -370,14 +408,14 @@ namespace Fusion.GKeys
                 msg.sub_id = (byte)feature.Item1;
                 msg.address = 0x1e;
                 {
-                    if (await SendReadMessage(msg, EReportId.Long) is (var length, var res) && length != 0)
+                    if (await SendReadMessage(msg, EReportId.Long) is hidpp20_message res)
                     {
                         PrintMessage(res);
                     }
                 }
                 {
                     msg.address = 0x0e;
-                    if (await SendReadMessage(msg, EReportId.Long) is (var length, var res) && length != 0)
+                    if (await SendReadMessage(msg, EReportId.Long) is hidpp20_message res)
                     {
                         PrintMessage(res);
                     }
@@ -400,7 +438,7 @@ namespace Fusion.GKeys
             {
                 msg.sub_id = (byte)feature.Item1;
 
-                if (await SendReadMessage(msg, EReportId.Long) is (var length, var res) && length != 0)
+                if (await SendReadMessage(msg, EReportId.Long) is hidpp20_message res)
                 {
                     EPowerState state;
                     switch (res.param2)
@@ -433,23 +471,34 @@ namespace Fusion.GKeys
             return voltage;
         }
 
-        async Task WaitForDeviceConnection()
+        async Task<bool> WaitForDeviceConnection(TimeSpan? maxWaitTime = null)
         {
-            while (true)
+            try
             {
-                if (await ReadMessage(EReportId.Short, null) is (var length, var msg))
+                DateTime startTime = DateTime.Now;
+                while (true)
                 {
-                    if (msg.sub_id == 0x41)
+                    var elapsedTime = DateTime.Now - startTime;
+                    if (maxWaitTime.HasValue && elapsedTime >= maxWaitTime.Value)
                     {
-                        if ((msg.param0 & 0x40) == 0)
+                        break;
+                    }
+                    var readTask = ReadMessage(EReportId.Short, null);
+                    if ((!maxWaitTime.HasValue || readTask.Wait(maxWaitTime.Value - elapsedTime)) &&
+                        await readTask is (var length, var msg) && length != 0)
+                    {
+                        if (msg.sub_id == 0x41 && (msg.param0 & 0x40) == 0) // Device connect
                         {
-                            Debug.Success("Device connected!");
-                            PrintMessage(msg);
-                            return;
+                            return true;
                         }
                     }
                 }
             }
+            catch (Exception e)
+            {
+                Debug.Exception(e);
+            }
+            return false;
         }
 
         bool OnMessageRead(hidpp20_message msg)
@@ -458,125 +507,155 @@ namespace Fusion.GKeys
             {
                 ushort buttons = (ushort)((msg.param0 << 8) | msg.param1);
                 OnButtonChanged?.Invoke(this, buttons);
-                //Debug.Info($"Mouse button pressed! {buttons.ToString("X4")}");
+                //Debug.Info($"Mouse button pressed! {buttons:X4}");
             }
             if (msg.report_id == k_ShortMessage && msg.sub_id == 0x41)
             {
-                if ((msg.param0 & 0x40) != 0)
+                //PrintMessage(msg);
+                if ((msg.param0 & 0x40) != 0)   // Device disconnect
                 {
-                    //Debug.Error("Device disconnected!");
-                    //PrintMessage(msg);
-                    //await WaitForDeviceConnection();
                     return false;
                 }
+
             }
             return true;
         }
 
         public async Task<bool> ListenForEvents()
         {
-            TimeSpan sleepTime = TimeSpan.FromSeconds(60);
+            TimeSpan maxSleepTime = TimeSpan.FromSeconds(30);
             ushort lastVoltage = 0;
             EPowerState lastState = EPowerState.Unknown;
-            try
+            DateTime lastBatteryUpdate = DateTime.Now.Subtract(maxSleepTime);
+
+
+            while (device20 != null)
             {
-                while (device20 != null)
+                var diff = DateTime.Now - lastBatteryUpdate;
+                if (diff >= maxSleepTime && await GetBatteryVoltage() is (ushort voltage, EPowerState state))
                 {
-                    //if (true && await Read(0x00) is ReadResult res)
-                    //{
-                    //    Debug.Info(ByteArrayToString(res.Data));
-                    //    continue;
-                    //}
-                    if (await GetBatteryVoltage() is (ushort voltage, EPowerState state))
+                    lastBatteryUpdate = DateTime.Now;
+                    if (voltage != lastVoltage || state != lastState)
                     {
-                        if (voltage != lastVoltage || state != lastState)
+                        lastVoltage = voltage;
+                        lastState = state;
+                        try
                         {
-                            lastVoltage = voltage;
-                            lastState = state;
                             var percent = voltagePercentMap.GetPercent(voltage);
                             OnBatteryChanged?.Invoke(this, voltage, percent, state);
                         }
-                    }
-
-                    var readAny = ReadMessage(0x00, null);
-                    await Task.WhenAny(Task.Delay(sleepTime), readAny);
-                    if (readAny.IsCompleted && await readAny is (var length, var msg))
-                    {
-                        if (OnMessageRead(msg) == false)
+                        catch (Exception e)
                         {
-                            return true;
+                            Debug.Exception(e, true);
                         }
                     }
                 }
-            }
-            catch (IOException)
-            {
-                device20 = null;
-                device7 = null;
+
+                var waitTime = maxSleepTime - diff;
+                if(waitTime <= TimeSpan.Zero)
+                {
+                    continue;
+                }
+                if (await ReadMessageTimeout(0x00, waitTime) is (var length, var msg) && length != 0)
+                {
+                    if (OnMessageRead(msg) == false)
+                    {
+                        return true;
+                    }
+                }
             }
 
             return !IsWireless && s_WirelessModels.Contains(Model);
         }
 
-        /// <returns>Value indicating if receiver is connected to device</returns>
         async Task<bool> EnableConnectionNotifications()
         {
+            hidpp20_message msg;
             // Use to check if notification are enabled
             //{
-            //    hidpp20_message msg = new hidpp20_message()
+            //    msg = new hidpp20_message()
             //    {
             //        report_id = k_ShortMessage,
             //        device_idx = 0xFF,
             //        sub_id = 0x81,
             //        address = 0x00
             //    };
-            //    if (await SendReadMessage(msg, EReportId.Short) is (var len, var res))
+            //    if (await SendReadMessage(msg, EReportId.Short) is hidpp20_message result)
             //    {
-            //        PrintMessage(res);
+            //        PrintMessage(result);
             //    }
             //}
             //{
-            //    hidpp20_message msg = new hidpp20_message()
+            //    msg = new hidpp20_message()
             //    {
             //        report_id = k_ShortMessage,
             //        device_idx = 0xFF,
             //        sub_id = 0x81,
             //        address = 0x02
             //    };
-            //    if (await SendReadMessage(msg, EReportId.Short) is (var len, var res))
+            //    if (await SendReadMessage(msg, EReportId.Short) is hidpp20_message result)
             //    {
-            //        PrintMessage(res);
+            //        PrintMessage(result);
             //    }
             //}
-
+            msg = new hidpp20_message()
             {
-                hidpp20_message msg = new hidpp20_message()
+                report_id = k_ShortMessage,
+                device_idx = 0xFF,
+                sub_id = 0x80,
+                param1 = 0x01,
+            };
+
+            if (!(await SendReadMessage(msg, EReportId.Short) is hidpp20_message _))
+            {
+                return false;
+            }
+
+            msg = new hidpp20_message()
+            {
+                report_id = k_ShortMessage,
+                device_idx = 0xFF,
+                sub_id = 0x80,
+                address = 0x02,
+                param0 = 0x02,
+            };
+
+            if (await SendReadMessage(msg, EReportId.Short) is hidpp20_message res)
+            {
+                return true;
+                // return (res.param0 & 0x40) == 0; should be value indicating if any device is connected to the receiver -- seems to not work
+            }
+            return false;
+        }
+
+        async Task<bool> IsDeviceConnected()
+        {
+            // @TODO - find a way to detect if there is any device connected to the receiver
+
+            //hidpp20_message msg = new hidpp20_message()
+            //{
+            //    report_id = k_ShortMessage,
+            //    device_idx = 0xFF,
+            //    sub_id = 0x81,
+            //};
+
+            // If we dont timeout we should be connected
+            hidpp20_message msg = new hidpp20_message()
+            {
+                report_id = k_LongMessage,
+                device_idx = deviceId,
+                sub_id = 0x00,
+                address = 0x00
+            };
+            if (await SendMessage(msg))
+            {
+                if (await ReadMessageTimeout(EReportId.Long, TimeSpan.FromMilliseconds(1000)) is (var length, var result) && length != 0)
                 {
-                    report_id = k_ShortMessage,
-                    device_idx = 0xFF,
-                    sub_id = 0x80,
-                    param1 = 1,
-                };
-                if (!(await SendReadMessage(msg, EReportId.Short) is (var len, var res)))
-                {
-                    return false;
+                    return true;
                 }
             }
 
-            {
-                hidpp20_message msg = new hidpp20_message()
-                {
-                    report_id = k_ShortMessage,
-                    device_idx = 0xFF,
-                    sub_id = 0x80,
-                    address = 0x02,
-                    param0 = 0x02,
-                };
-                if (await SendReadMessage(msg, EReportId.Short) is (var len, var res))
-                {
-                    return (res.param0 & 0x40) == 0;
-                }
-            }
+
             return false;
         }
 
@@ -593,7 +672,7 @@ namespace Fusion.GKeys
                 address = CMD_ROOT_GET_PROTOCOL_VERSION
             };
 
-            if (await SendReadMessage(msg, EReportId.Long) is (var length, var res) && length != 0)
+            if (await SendReadMessage(msg, EReportId.Long) is hidpp20_message res)
             {
                 return (res.param0, res.param1);
             }
@@ -606,23 +685,26 @@ namespace Fusion.GKeys
             if (device7 == null || device20 == null)
                 return false;
 
+            await device7.InitializeAsync();
+            await device20.InitializeAsync();
+
             deviceId = 0x01;
 
-            bool connected = !IsWireless || await EnableConnectionNotifications();
-            if (!connected)
+            if (IsWireless &&
+                await EnableConnectionNotifications() &&
+                await IsDeviceConnected() == false)
             {
-                await WaitForDeviceConnection();
-                //Read(0x00).Wait(TimeSpan.FromMilliseconds(500));
-            }
-
-            if (await GetProtocolVersion() is (byte major, byte minor))
-            {
-                versionMajor = major;
-                versionMinor = minor;
+                return false;
             }
 
             if (await RootGetFeature(EHidppPage.FeatureSet) is (byte featureIndex, byte featureType, byte featureVersion))
             {
+                if (await GetProtocolVersion() is (byte major, byte minor))
+                {
+                    versionMajor = major;
+                    versionMinor = minor;
+                }
+
                 var featureCount = await GetFeatureCount(featureIndex);
                 if (featureCount < 0) return false;
                 featureCount += 1;
@@ -631,9 +713,6 @@ namespace Fusion.GKeys
                 {
                     if (await GetFeature(featureIndex, (byte)i) is hidpp20_feature feature)
                     {
-                        //string page = Enum.IsDefined(typeof(EHidppPage), feature.feature) ? ((EHidppPage)feature.feature).ToString() :
-                        //    "0x" + feature.feature.ToString("X4");
-                        //Debug.Info($"0x{feature.type} 0x{i.ToString("X2")}: \"{page}\"");
                         features.Add((EHidppPage)feature.feature, (i, feature));
                     }
                     else
@@ -663,16 +742,10 @@ namespace Fusion.GKeys
             IsWireless = isWireless;
             _devices.TryGetValue(7, out device7);
             _devices.TryGetValue(20, out device20);
-            devices = new Dictionary<EReportId, IDevice>()
-            {
-                { EReportId.Short, device7 },
-                { EReportId.Long, device20 },
-            };
         }
 
-        public static async Task<List<Mouse>> GetConnected()
+        public static async Task<Mouse> GetConnected()
         {
-            List<Mouse> mice = new List<Mouse>();
 
             var devices = await DeviceManager.Current.GetConnectedDeviceDefinitionsAsync(
                new FilterDeviceDefinition() { DeviceType = DeviceType.Hid, VendorId = k_VendorId, UsagePage = 0xFF00 }
@@ -680,61 +753,53 @@ namespace Fusion.GKeys
 
             EMouseModel selectedModel;
             HashSet<uint> added_devices = new HashSet<uint>();
-            do
+
+            selectedModel = EMouseModel.Unknown;
+            Dictionary<int, IDevice> device_map = new Dictionary<int, IDevice>();
+            uint selectedProductId = 0;
+            string productName = "";
+            foreach (var definition in devices)
             {
-                selectedModel = EMouseModel.Unknown;
-                Dictionary<int, IDevice> device_map = new Dictionary<int, IDevice>();
-                uint selectedProductId = 0;
-                string productName = "";
-                foreach (var definition in devices)
+                if (!definition.ProductId.HasValue) continue;
+                if (definition.ReadBufferSize != definition.WriteBufferSize) continue;
+
+                uint productId = definition.ProductId.Value;
+
+                if (added_devices.Contains(productId)) continue;
+
+                if (s_SupportedModels.TryGetValue(productId, out var model))
                 {
-                    if (!definition.ProductId.HasValue) continue;
-                    if (definition.ReadBufferSize != definition.WriteBufferSize) continue;
-
-                    uint productId = definition.ProductId.Value;
-
-                    if (added_devices.Contains(productId)) continue;
-
-                    if (s_SupportedModels.TryGetValue(productId, out var model))
+                    if (selectedModel != EMouseModel.Unknown && selectedModel != model)
                     {
-                        if (selectedModel != EMouseModel.Unknown && selectedModel != model)
-                        {
-                            continue;
-                        }
-                        selectedModel = model;
-
-                        if (s_PriorityDevice.Contains(productId))
-                        {
-                            if (selectedProductId != productId)
-                            {
-                                device_map.Clear();
-                                added_devices.Add(selectedProductId);
-                                selectedProductId = productId;
-                            }
-                        }
-                        //if (selectedProductId != 0 && selectedProductId != productId)
-                        //{
-                        //    //added_devices.Add(productId);
-                        //    continue;
-                        //}
-                        selectedProductId = productId;
-
-                        productName = definition.ProductName;
-                        IDevice device = DeviceManager.Current.GetDevice(definition);
-                        await device.InitializeAsync();
-                        device_map.Add(definition.ReadBufferSize.Value, device);
+                        continue;
                     }
-                }
-                added_devices.Add(selectedProductId);
-                if (device_map.Count > 0)
-                {
-                    bool isWireless = s_WirelessConnection.Contains(selectedProductId);
-                    mice.Add(new Mouse(productName, selectedModel, isWireless, device_map));
+                    selectedModel = model;
+
+                    if (s_PriorityDevice.Contains(productId))
+                    {
+                        if (selectedProductId != productId)
+                        {
+                            device_map.Clear();
+                            added_devices.Add(selectedProductId);
+                            selectedProductId = productId;
+                        }
+                    }
+                    
+                    selectedProductId = productId;
+
+                    productName = definition.ProductName;
+                    IDevice device = DeviceManager.Current.GetDevice(definition);
+                    await device.InitializeAsync();
+                    device_map.Add(definition.ReadBufferSize.Value, device);
                 }
             }
-            while (selectedModel != EMouseModel.Unknown);
-
-            return mice;
+            added_devices.Add(selectedProductId);
+            if (device_map.Count > 0)
+            {
+                bool isWireless = s_WirelessConnection.Contains(selectedProductId);
+                return new Mouse(productName, selectedModel, isWireless, device_map);
+            }
+            return null;
         }
 
         /// <returns>featureIndex, featureType, featureVersion</returns>
@@ -755,7 +820,7 @@ namespace Fusion.GKeys
 
             };
 
-            if (await SendReadMessage(msg, EReportId.Long) is (var length, var res) && length != 0)
+            if (await SendReadMessage(msg, EReportId.Long) is hidpp20_message res)
             {
                 return (res.param0, res.param1, res.param2);
             }
@@ -773,7 +838,7 @@ namespace Fusion.GKeys
                 address = 0x00
             };
 
-            if (await SendReadMessage(msg, EReportId.Long) is (var length, var res) && length != 0)
+            if (await SendReadMessage(msg, EReportId.Long) is hidpp20_message res)
             {
                 return res.param0;
             }
@@ -794,7 +859,7 @@ namespace Fusion.GKeys
                 param0 = featureId
             };
 
-            if (await SendReadMessage(msg, EReportId.Long) is (var length, var res) && length != 0)
+            if (await SendReadMessage(msg, EReportId.Long) is hidpp20_message res)
             {
                 return new hidpp20_feature()
                 {

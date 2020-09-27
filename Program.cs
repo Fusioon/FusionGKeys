@@ -2,7 +2,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.UI.Notifications;
@@ -48,7 +47,7 @@ namespace Fusion.GKeys
             {
                 TimeSpan voltageNotificatinCooldown = TimeSpan.FromSeconds(5);
 
-                if (DateTime.Now -  lastVoltageNotification < voltageNotificatinCooldown)
+                if (DateTime.Now - lastVoltageNotification < voltageNotificatinCooldown)
                 {
                     return;
                 }
@@ -96,16 +95,8 @@ namespace Fusion.GKeys
             toastNotifier.Show(notification);
         }
 
-        static Logger batteryLogger = new Logger("battery", new Logger.Settings()
-        {
-            appendFile = true,
-            consoleOutput = false,
-            filePath = "./Logs/voltage.log"
-        });
-
         static void OnBatteryChanged(Mouse mouse, uint voltage, float percent, EPowerState state)
         {
-            batteryLogger.Info($"{voltage} mV {percent} %");
 
             if (state == EPowerState.OnBattery && voltage < settings.low_battery_voltage)
             {
@@ -128,11 +119,13 @@ namespace Fusion.GKeys
 
         static async Task<bool> RunMouse()
         {
-            using Mouse mouse = (await Mouse.GetConnected()).FirstOrDefault();
+            lastVoltage = 0;
+            lastPowerState = 0;
+
+            using Mouse mouse = await Mouse.GetConnected();
 
             if (mouse != null && await mouse.Initialize())
             {
-                batteryLogger.Info($"Using mouse \'{mouse.Model}\'.");
                 mouse.OnBatteryChanged = OnBatteryChanged;
                 mouse.OnButtonChanged = OnMouseButtonsChanged;
                 return await mouse.ListenForEvents();
@@ -143,7 +136,7 @@ namespace Fusion.GKeys
 
         static async Task<bool> RunKeyboard()
         {
-            using Keyboard keyboard = (await Keyboard.GetConnected()).FirstOrDefault();
+            using Keyboard keyboard = await Keyboard.GetConnected();
 
             if (keyboard != null)
             {
@@ -167,7 +160,7 @@ namespace Fusion.GKeys
             Task<bool> keyboardTask = null, mouseTask = null;
 
             int maxRetryCount = 20;
-            while (maxRetryCount > 0)
+            while (maxRetryCount >= 0)
             {
                 if (keyboardTask == null || keyboardTask.IsCompleted)
                 {
@@ -179,13 +172,13 @@ namespace Fusion.GKeys
                 }
 
                 await Task.WhenAny(keyboardTask, mouseTask);
-                
-                if((keyboardTask.IsCompleted && !keyboardTask.Result) || (mouseTask.IsCompleted && !mouseTask.Result))
+
+                if ((keyboardTask.IsCompleted && !keyboardTask.Result) && (mouseTask.IsCompleted && !mouseTask.Result))
                 {
                     --maxRetryCount;
                 }
 
-                if(!mouseTask.IsCompleted || !mouseTask.Result)
+                if (!mouseTask.IsCompleted || !mouseTask.Result)
                 {
                     await Task.Delay(sleepTime);
                 }
@@ -209,14 +202,7 @@ namespace Fusion.GKeys
                 {
                     handle.Set();
                     handle.Reset();
-                }
-
-                foreach(var arg in args)
-                {
-                    if(string.Compare(arg, "--exit", true) == 0)
-                    {
-                        return;
-                    }
+                    await Task.Delay(TimeSpan.FromSeconds(1));
                 }
 
                 Task exitTask = Task.Run(() =>
@@ -224,12 +210,19 @@ namespace Fusion.GKeys
                     handle.WaitOne();
                 });
 
+                TaskScheduler.UnobservedTaskException += OnUnobserverdTaskException;
+
                 await Task.WhenAny(exitTask, Run());
             }
-            catch (Exception ex)
+            catch(Exception e)
             {
-                Debug.Exception(ex, true);
+                Debug.Exception(e, true);
             }
+        }
+
+        private static void OnUnobserverdTaskException(object sender, UnobservedTaskExceptionEventArgs e)
+        {
+            Debug.Exception(e.Exception, true);
         }
     }
 }
