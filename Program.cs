@@ -140,8 +140,11 @@ namespace Fusion.GKeys
 
             if (keyboard != null)
             {
-                await keyboard.SetGKeys(false);
+                await keyboard.SetOnBoardMode(OnBoardMode.Software);
+                await keyboard.SetGKeysMode(false);
                 await keyboard.SetColor(settings, NativeEffectPart.All);
+                await keyboard.Commit();
+
                 keyboard.OnMacroKeyPressed = OnMacroKeyPressed;
                 await keyboard.ListenForMacroKeys();
                 return true;

@@ -9,7 +9,8 @@ namespace Fusion.GKeys
     public enum EKeyboardModel
     {
         Unknown,
-        G910
+        G910,
+        G815
     }
 
     public enum EStartupEffect : byte
@@ -52,6 +53,7 @@ namespace Fusion.GKeys
         M3,
         MR,
 
+        Light,
 
         MAX
     }
@@ -63,6 +65,13 @@ namespace Fusion.GKeys
         user,
     }
 
+
+    public enum OnBoardMode
+    {
+        OnBoard,
+        Software
+    }
+
     public class Keyboard : IDisposable
     {
         // Logitech Vendor ID
@@ -71,6 +80,7 @@ namespace Fusion.GKeys
         static readonly Dictionary<uint, EKeyboardModel> s_SupportedModels = new Dictionary<uint, EKeyboardModel>()
         {
             { 0xC335, EKeyboardModel.G910 },
+            { 0xC33F, EKeyboardModel.G815 },
         };
 
         public delegate void OnMacroKey(Keyboard kb, EMacroKey key);
@@ -84,46 +94,163 @@ namespace Fusion.GKeys
         bool[] macroKeysDown = new bool[(int)EMacroKey.MAX];
 
         IDevice _device;
-        public async Task SetGKeys(bool asFKeys)
+
+        
+        public async Task SetOnBoardMode(OnBoardMode mode)
         {
-            byte value = (byte)(asFKeys ? 0 : 1);
             byte[] data = new byte[20];
 
-            data[0] = 0x11;
-            data[1] = 0xff;
-            data[2] = 0x08;
-            data[3] = 0x2e;
-            data[4] = value;
+            switch (Model)
+            {
+                case EKeyboardModel.G815:
+                    {
+                        data[0] = 0x11;
+                        data[1] = 0xff;
+                        data[2] = 0x11;
+                        data[3] = 0x1a;
+                        switch(mode)
+                        {
+                            case OnBoardMode.OnBoard: 
+                                data[4] = 0x01;
+                                break;
+
+                            case OnBoardMode.Software:
+                                data[4] = 0x02;
+                                break;
+                        }
+                        break;
+                    }
+                
+                default: 
+                    return;
+            }
+            await _device.WriteAsync(data);
+        }
+
+        public async Task Commit()
+        {
+            byte[] data = new byte[20];
+            switch(Model)
+            {
+                case EKeyboardModel.G815:
+                    {
+                        data[0] = 0x11;
+                        data[1] = 0xff;
+                        data[2] = 0x10;
+                        data[3] = 0x7f;
+                        break;
+                    }
+
+                case EKeyboardModel.G910:
+                    {
+                        data[0] = 0x11;
+                        data[1] = 0xff;
+                        data[2] = 0x0f;
+                        data[3] = 0x5d;
+                        break;
+                    }
+
+                default: return;
+            }
 
             await _device.WriteAsync(data);
         }
 
-        public async Task SetMRKeys(byte value)
+        public async Task SetGKeysMode(bool asFKeys)
         {
+            byte value = (byte)(asFKeys ? 0x00 : 0x01);
+            byte[] data = new byte[20];
+
             switch (Model)
             {
+                case EKeyboardModel.G815:
+                    {
+                        data[0] = 0x11;
+                        data[1] = 0xff;
+                        data[2] = 0x0a;
+                        data[3] = 0x2b;
+                        data[4] = value;
+                        break;
+
+                    }
+                case EKeyboardModel.G910:
+                    {
+                        data[0] = 0x11;
+                        data[1] = 0xff;
+                        data[2] = 0x08;
+                        data[3] = 0x2e;
+                        data[4] = value;
+                        break;
+
+                    }
+
+                default: 
+                    return;
+            }
+
+            await _device.WriteAsync(data);
+        }
+
+        public async Task SetMRKey(byte value)
+        {
+            byte[] data = new byte[20];
+           
+            switch (Model)
+            {
+                case EKeyboardModel.G815:
+                    {
+                        data[0] = 0x11;
+                        data[1] = 0xff;
+                        data[2] = 0x0c;
+                        data[3] = 0x0c;
+                        data[4] = value;
+                        break;
+                    }
+
                 case EKeyboardModel.G910:
                     switch (value)
                     {
                         case 0x00:
                         case 0x01:
-                            byte[] data = new byte[20];
                             data[0] = 0x11;
                             data[1] = 0xff;
                             data[2] = 0x0a;
                             data[3] = 0x0e;
                             data[4] = value;
-                            await _device.WriteAsync(data);
                             break;
                     }
                     break;
+
+                default:
+                    return;
             }
+
+            await _device.WriteAsync(data);
         }
 
         public async Task SetMNKeys(byte value)
         {
+            byte[] data = new byte[20];
+
             switch (Model)
             {
+                case EKeyboardModel.G815:
+                    {
+                        data[0] = 0x11;
+                        data[1] = 0xff;
+                        data[2] = 0x0a;
+                        data[3] = 0x0e;
+
+                        switch (value)
+                        {
+                            case 1: data[3] = 0x01; break;
+                            case 2: data[3] = 0x02; break;
+                            case 3: data[3] = 0x04; break;
+                        }
+
+                        break;
+                    }
+
                 case EKeyboardModel.G910:
                     switch (value)
                     {
@@ -135,7 +262,6 @@ namespace Fusion.GKeys
                         case 0x05:
                         case 0x06:
                         case 0x07:
-                            byte[] data = new byte[20];
                             data[0] = 0x11;
                             data[1] = 0xff;
                             data[2] = 0x09;
@@ -145,20 +271,31 @@ namespace Fusion.GKeys
                             break;
                     }
                     break;
+
+
+                default: break;
             }
         }
 
-        private byte GetProtocolByte()
+        private (byte, byte) GetProtocolByte()
         {
-            const byte K_G910_PROTOCOL_BYTE = 0x10;
+            const byte K_G910_PROTOCOL_BYTE_1 = 0x10;
+            const byte K_G910_PROTOCOL_BYTE_2 = 0x3c;
+
+
+            const byte K_G815_PROTOCOL_BYTE_1 = 0x0f;
+            const byte K_G815_PROTOCOL_BYTE_2 = 0x1c;
 
             switch (Model)
             {
+                case EKeyboardModel.G815:
+                    return (K_G815_PROTOCOL_BYTE_1, K_G815_PROTOCOL_BYTE_2);
+
                 case EKeyboardModel.G910:
-                    return K_G910_PROTOCOL_BYTE;
+                    return (K_G910_PROTOCOL_BYTE_1, K_G910_PROTOCOL_BYTE_2);
             }
 
-            return 0;
+            return (0, 0);
         }
 
         public async Task SetStartupEffect(EStartupEffect effect)
@@ -166,7 +303,7 @@ namespace Fusion.GKeys
             byte[] data = new byte[20];
             data[0] = 0x11;
             data[1] = 0xff;
-            data[2] = GetProtocolByte();
+            data[2] = GetProtocolByte().Item1;
             switch (Model)
             {
                 case EKeyboardModel.G910:
@@ -230,11 +367,11 @@ namespace Fusion.GKeys
             }
 
 
-            byte protocolByte = GetProtocolByte();
+            (byte protocolByte1, byte protocolByte2) = GetProtocolByte();
 
             byte[] data = new byte[20]
             {
-                0x11, 0xff, protocolByte, 0x3c,
+                0x11, 0xff, protocolByte1, protocolByte2,
                 (byte)part, effectGroup,
                 // color of static-color and breathing effects
                 settings.color.red, settings.color.green, settings.color.blue,
@@ -250,6 +387,56 @@ namespace Fusion.GKeys
                 storage,
                 0,0,0 // unused?
             };
+
+            switch(Model)
+            {
+                case EKeyboardModel.G815:
+                    {
+                        byte[] setupData = new byte[20];
+                        setupData[0] = 0x11;
+                        setupData[1] = 0xFF;
+                        setupData[2] = 0x0F;
+                        setupData[3] = 0x5C;
+                        setupData[4] = 0x01;
+                        setupData[5] = 0x03;
+                        setupData[6] = 0x03;
+                        await _device.WriteAsync(setupData);
+
+                        data[16] = 0x01;
+                        if(part == NativeEffectPart.Keys)
+                        {
+                            data[4] = 0x01;
+                        }
+                        else if (part == NativeEffectPart.Logo)
+                        {
+                            data[4] = 0;
+                            switch(settings.effect)
+                            {
+                                case EEffect.Breathing:
+                                    data[5] = 0x03;
+                                    break;
+
+                                case EEffect.ColorWave:
+                                    data[5] = 0x02;
+                                    data[13] = 0x64;
+                                    break;
+
+                                case EEffect.Cycle:
+                                    data[5] = 0x02;
+                                    break;
+
+                                default:
+                                    data[5] = 0x01;
+                                    break;
+                            }
+                        }
+
+                        break;
+                    }
+
+                default:
+                    break;
+            }
 
             await _device.WriteAsync(data);
         }
@@ -277,32 +464,75 @@ namespace Fusion.GKeys
 
         protected void MacroKeyEvent(byte sub_id, byte param0, byte param1)
         {
-            // MKeys
-            if (sub_id == 0x08)
+            switch (Model)
             {
-                MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.G1);
-                MacroKeyUpdate((param0 & 0x02) != 0, EMacroKey.G2);
-                MacroKeyUpdate((param0 & 0x04) != 0, EMacroKey.G3);
-                MacroKeyUpdate((param0 & 0x08) != 0, EMacroKey.G4);
-                MacroKeyUpdate((param0 & 0x10) != 0, EMacroKey.G5);
-                MacroKeyUpdate((param0 & 0x20) != 0, EMacroKey.G6);
-                MacroKeyUpdate((param0 & 0x40) != 0, EMacroKey.G7);
-                MacroKeyUpdate((param0 & 0x80) != 0, EMacroKey.G8);
-                MacroKeyUpdate((param1 & 0x01) != 0, EMacroKey.G9);
-            }
+                case EKeyboardModel.G815:
+                    {
+                        // GKeys
+                        if (sub_id == 0x0A)
+                        {
+                            MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.G1);
+                            MacroKeyUpdate((param0 & 0x02) != 0, EMacroKey.G2);
+                            MacroKeyUpdate((param0 & 0x04) != 0, EMacroKey.G3);
+                            MacroKeyUpdate((param0 & 0x08) != 0, EMacroKey.G4);
+                            MacroKeyUpdate((param0 & 0x10) != 0, EMacroKey.G5);
+                        }
 
-            // MKeys
-            if (sub_id == 0x09)
-            {
-                MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.M1);
-                MacroKeyUpdate((param0 & 0x02) != 0, EMacroKey.M2);
-                MacroKeyUpdate((param0 & 0x04) != 0, EMacroKey.M3);
-            }
+                        // MKeys
+                        if(sub_id == 0x0B)
+                        { 
+                            MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.M1);
+                            MacroKeyUpdate((param0 & 0x02) != 0, EMacroKey.M2);
+                            MacroKeyUpdate((param0 & 0x03) != 0, EMacroKey.M3);
+                        }
 
-            // MRKey
-            if (sub_id == 0x0A)
-            {
-                MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.MR);
+                        if(sub_id == 0x0C)
+                        {
+                            MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.MR);
+                        }
+
+                        if (sub_id == 0x0D)
+                        {
+                            MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.Light);
+                        }
+
+                        break;
+                    }
+
+                case EKeyboardModel.G910:
+                    {
+                        // MKeys
+                        if (sub_id == 0x08)
+                        {
+                            MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.G1);
+                            MacroKeyUpdate((param0 & 0x02) != 0, EMacroKey.G2);
+                            MacroKeyUpdate((param0 & 0x04) != 0, EMacroKey.G3);
+                            MacroKeyUpdate((param0 & 0x08) != 0, EMacroKey.G4);
+                            MacroKeyUpdate((param0 & 0x10) != 0, EMacroKey.G5);
+                            MacroKeyUpdate((param0 & 0x20) != 0, EMacroKey.G6);
+                            MacroKeyUpdate((param0 & 0x40) != 0, EMacroKey.G7);
+                            MacroKeyUpdate((param0 & 0x80) != 0, EMacroKey.G8);
+                            MacroKeyUpdate((param1 & 0x01) != 0, EMacroKey.G9);
+                        }
+
+                        // MKeys
+                        if (sub_id == 0x09)
+                        {
+                            MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.M1);
+                            MacroKeyUpdate((param0 & 0x02) != 0, EMacroKey.M2);
+                            MacroKeyUpdate((param0 & 0x04) != 0, EMacroKey.M3);
+                        }
+
+                        // MRKey
+                        if (sub_id == 0x0A)
+                        {
+                            MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.MR);
+                        }
+                        break;
+                    }
+
+                default: 
+                    return;
             }
         }
 
@@ -327,6 +557,9 @@ namespace Fusion.GKeys
                         case 0x08:
                         case 0x09:
                         case 0x0A:
+                        case 0x0B:
+                        case 0x0C:
+                        case 0x0D:
                             MacroKeyEvent(result.Data[2], result.Data[4], result.Data[5]);
                             break;
                     }
