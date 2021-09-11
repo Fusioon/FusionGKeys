@@ -238,16 +238,9 @@ namespace Fusion.GKeys
                     {
                         data[0] = 0x11;
                         data[1] = 0xff;
-                        data[2] = 0x0a;
-                        data[3] = 0x0e;
-
-                        switch (value)
-                        {
-                            case 1: data[3] = 0x01; break;
-                            case 2: data[3] = 0x02; break;
-                            case 3: data[3] = 0x04; break;
-                        }
-
+                        data[2] = 0x0b;
+                        data[3] = 0x1c;
+                        data[4] = value;
                         break;
                     }
 
@@ -267,14 +260,16 @@ namespace Fusion.GKeys
                             data[2] = 0x09;
                             data[3] = 0x1e;
                             data[4] = value;
-                            await _device.WriteAsync(data);
                             break;
                     }
                     break;
 
 
-                default: break;
+                default: return;
             }
+
+            await _device.WriteAsync(data);
+
         }
 
         private (byte, byte) GetProtocolByte()
@@ -462,12 +457,15 @@ namespace Fusion.GKeys
             macroKeysDown[index] = isDown;
         }
 
-        protected void MacroKeyEvent(byte sub_id, byte param0, byte param1)
+        protected void MacroKeyEvent(byte sub_id, byte d3, byte param0, byte param1)
         {
             switch (Model)
             {
                 case EKeyboardModel.G815:
                     {
+                        if (d3 == 0x1C)
+                            return;
+
                         // GKeys
                         if (sub_id == 0x0A)
                         {
@@ -483,7 +481,7 @@ namespace Fusion.GKeys
                         { 
                             MacroKeyUpdate((param0 & 0x01) != 0, EMacroKey.M1);
                             MacroKeyUpdate((param0 & 0x02) != 0, EMacroKey.M2);
-                            MacroKeyUpdate((param0 & 0x03) != 0, EMacroKey.M3);
+                            MacroKeyUpdate((param0 & 0x04) != 0, EMacroKey.M3);
                         }
 
                         if(sub_id == 0x0C)
@@ -560,7 +558,7 @@ namespace Fusion.GKeys
                         case 0x0B:
                         case 0x0C:
                         case 0x0D:
-                            MacroKeyEvent(result.Data[2], result.Data[4], result.Data[5]);
+                            MacroKeyEvent(result.Data[2], result.Data[3], result.Data[4], result.Data[5]);
                             break;
                     }
                 }

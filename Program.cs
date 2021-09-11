@@ -142,8 +142,11 @@ namespace Fusion.GKeys
             {
                 await keyboard.SetOnBoardMode(OnBoardMode.Software);
                 await keyboard.SetGKeysMode(false);
+                await keyboard.SetStartupEffect(EStartupEffect.wave);
+                await keyboard.SetMNKeys(7);
                 await keyboard.SetColor(settings, NativeEffectPart.All);
-                await keyboard.Commit();
+
+                //await keyboard.Commit();
 
                 keyboard.OnMacroKeyPressed = OnMacroKeyPressed;
                 await keyboard.ListenForMacroKeys();
